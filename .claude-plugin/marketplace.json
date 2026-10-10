@@ -1,0 +1,16 @@
+{
+  "name": "dep-triage",
+  "owner": {
+    "name": "Nohan75",
+    "url": "https://github.com/Nohan75"
+  },
+  "description": "dep-triage: npm dependency security scanning with impact triage, as a Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "dep-triage",
+      "source": "./",
+      "description": "Scan npm dependencies for known vulnerabilities and malicious packages, then triage each alert by its real impact on your code.",
+      "category": "security"
+    }
+  ]
+}

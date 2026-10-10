@@ -1,0 +1,5 @@
+{
+  "lodash@4.17.15": ["GHSA-29mw-wpgm-hmr9", "GHSA-35jh-r3h4-6jhm", "GHSA-f23m-r3pf-42rh", "GHSA-p6mc-m468-83gw", "GHSA-r5fr-rjxr-66jc", "GHSA-xxjr-mmjv-4gpg"],
+  "minimist@1.2.5": ["GHSA-xvch-5gv4-984h"],
+  "chalk@5.6.1": ["MAL-2025-46969"]
+}

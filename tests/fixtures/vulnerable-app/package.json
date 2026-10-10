@@ -1,0 +1,8 @@
+{
+  "name": "vulnerable-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": { "lodash": "4.17.15", "ora": "8.2.0" },
+  "devDependencies": { "minimist": "1.2.5" }
+}
