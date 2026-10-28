@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareVersions, buildFindings, scan } from "../skills/dep-triage/scripts/scan.mjs";
-import { json, loadVuln, makeProject, osvFixtureFetch, recordingFetch } from "./helpers.mjs";
+import { fixtureFetch, json, loadVuln, makeProject, nodeFixtureResponse, recordingFetch } from "./helpers.mjs";
 
 const pkg = (name, version, extra = {}) => ({ name, version, direct: true, scope: "prod", introducedBy: [name], origin: "registry", ...extra });
 const details = (...ids) => new Map(ids.map((id) => [id, loadVuln(id)]));
@@ -103,40 +103,61 @@ test("findings are sorted: malware, then severity, then package, then id", () =>
 const FIXTURE = fileURLToPath(new URL("./fixtures/vulnerable-app", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../skills/dep-triage/scripts/scan.mjs", import.meta.url));
 const REG = (n, v) => `https://registry.npmjs.org/${n}/-/${n}-${v}.tgz`;
-const opts = (fetchFn) => ({ fetchFn, retryDelayMs: 0, now: () => new Date("2026-10-10T15:00:00.000Z") });
+// The Node.js running the scan is pinned to a patched release, so that the tests do not depend on the machine.
+const opts = (fetchFn) => ({ fetchFn, retryDelayMs: 0, now: () => new Date("2026-10-10T15:00:00.000Z"), nodeVersion: "v24.22.1" });
 const project = (packages, pkg = {}) => makeProject({ "package.json": pkg, "package-lock.json": { lockfileVersion: 3, packages: { "": {}, ...packages } } });
 
 test("scan reports the three cases of the example project", async () => {
-  const { exitCode, output } = await scan(FIXTURE, opts(osvFixtureFetch()));
+  const { exitCode, output } = await scan(FIXTURE, opts(fixtureFetch()));
   assert.equal(exitCode, 1);
   assert.deepEqual([output.schemaVersion, output.project, output.scannedAt], [1, FIXTURE, "2026-10-10T15:00:00.000Z"]);
-  assert.deepEqual(output.summary, { packagesChecked: 4, packagesSkipped: 0, malware: 1, vulnerabilities: 5 });
+  assert.deepEqual(output.summary, { packagesChecked: 4, packagesSkipped: 0, malware: 1, vulnerabilities: 5, nodeVulnerabilities: 10, nodeEndOfLife: 0 });
   assert.deepEqual(output.findings.map((x) => x.id), [CHALK, MINIMIST, "GHSA-35jh-r3h4-6jhm", "GHSA-p6mc-m468-83gw", "GHSA-29mw-wpgm-hmr9", "GHSA-f23m-r3pf-42rh"]);
   const [chalk, minimist] = output.findings;
   assert.deepEqual([chalk.direct, chalk.scope, chalk.introducedBy], [false, "prod", ["ora", "chalk"]]);
   assert.deepEqual([minimist.direct, minimist.scope], [true, "dev"]);
+  assert.deepEqual(output.node.versions.map((v) => [v.version, v.sources, v.vulnerabilities.length, v.fixedIn]), [
+    ["24.18.0", [".nvmrc"], 10, "24.22.1"],
+    ["24.22.1", ["runtime"], 0, null],
+  ]);
+  assert.deepEqual([output.node.supportedLines, output.node.notChecked], [["22", "24", "26"], []]);
+  assert.deepEqual(Object.keys(output), ["schemaVersion", "project", "scannedAt", "summary", "findings", "node", "skipped"]);
   assert.deepEqual(output.skipped, []);
 });
 
 test("a path to package.json works like its folder", async () => {
-  const { output } = await scan(path.join(FIXTURE, "package.json"), opts(osvFixtureFetch()));
+  const { output } = await scan(path.join(FIXTURE, "package.json"), opts(fixtureFetch()));
   assert.equal(output.project, FIXTURE);
 });
 
 test("a clean project exits 0", async () => {
   const dir = project({ "node_modules/ora": { version: "8.2.0", resolved: REG("ora", "8.2.0") } }, { dependencies: { ora: "8.2.0" } });
-  const { exitCode, output } = await scan(dir, opts(osvFixtureFetch()));
+  const { exitCode, output } = await scan(dir, opts(fixtureFetch()));
   assert.deepEqual([exitCode, output.findings, output.summary.packagesChecked], [0, [], 1]);
 });
 
 test("a project without dependencies exits 0 without calling OSV", async () => {
-  const f = osvFixtureFetch();
+  const f = fixtureFetch();
   const { exitCode, output } = await scan(project({}), opts(f));
-  assert.deepEqual([exitCode, output.summary.packagesChecked, f.calls.length], [0, 0, 0]);
+  const osvCalls = f.calls.filter((c) => c.url.startsWith("https://api.osv.dev/"));
+  assert.deepEqual([exitCode, output.summary.packagesChecked, osvCalls.length], [0, 0, 0]);
+});
+
+test("a vulnerable or end-of-life Node.js alone exits 1", async () => {
+  for (const [nvmrc, summary] of [["24.18.0", [10, 0]], ["20", [0, 1]]]) {
+    const dir = makeProject({ "package.json": {}, "package-lock.json": { lockfileVersion: 3, packages: { "": {} } }, ".nvmrc": nvmrc });
+    const { exitCode, output } = await scan(dir, opts(fixtureFetch()));
+    assert.deepEqual([exitCode, output.findings, output.summary.nodeVulnerabilities, output.summary.nodeEndOfLife], [1, [], ...summary]);
+  }
+});
+
+test("nodeVersion null leaves the running Node.js out", async () => {
+  const { output } = await scan(project({}), { ...opts(fixtureFetch()), nodeVersion: null });
+  assert.deepEqual(output.node.versions, []);
 });
 
 test("non-registry packages are skipped and never sent to OSV", async () => {
-  const f = osvFixtureFetch();
+  const f = fixtureFetch();
   const dir = project({
     "node_modules/@acme/internal": { version: "1.0.0", resolved: "https://npm.acme.internal/@acme/internal/-/internal-1.0.0.tgz" },
     "node_modules/forked": { version: "2.0.0", resolved: "git+ssh://git@github.com/acme/forked.git#abc123" },
@@ -169,15 +190,23 @@ test("each failure exits 2 with its error code", async () => {
   }
 });
 
+test("Node.js data that cannot be downloaded exits 2, even when OSV answered", async () => {
+  const osv = fixtureFetch();
+  const f = recordingFetch((url, init) => (nodeFixtureResponse(url) !== null ? json({}, 503) : osv(url, init)));
+  const { exitCode, output } = await scan(FIXTURE, opts(f));
+  assert.deepEqual([exitCode, output.error.code], [2, "NODE_DATA_UNAVAILABLE"]);
+  assert.ok(output.error.hint.includes("NODE_USE_ENV_PROXY"));
+});
+
 test("NO_LOCKFILE gives the command, INVALID_JSON names the file", async () => {
-  const a = await scan(makeProject({ "package.json": {} }), opts(osvFixtureFetch()));
+  const a = await scan(makeProject({ "package.json": {} }), opts(fixtureFetch()));
   assert.equal(a.output.error.hint, "npm install --package-lock-only --ignore-scripts");
-  const b = await scan(makeProject({ "package.json": {}, "package-lock.json": "{ not json" }), opts(osvFixtureFetch()));
+  const b = await scan(makeProject({ "package.json": {}, "package-lock.json": "{ not json" }), opts(fixtureFetch()));
   assert.ok(b.output.error.message.includes("package-lock.json"));
 });
 
 test("an unexpected exception exits 2, not 1", async () => {
-  const { exitCode, output } = await scan(FIXTURE, { ...opts(osvFixtureFetch()), now: () => { throw new Error("boom"); } });
+  const { exitCode, output } = await scan(FIXTURE, { ...opts(fixtureFetch()), now: () => { throw new Error("boom"); } });
   assert.deepEqual([exitCode, output.error.code], [2, "INTERNAL_ERROR"]);
 });
 

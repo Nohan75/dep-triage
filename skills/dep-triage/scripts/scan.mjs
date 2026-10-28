@@ -1,13 +1,16 @@
 // Entry point of the scanner: reads a project's lockfile, asks OSV.dev about every public
-// package, and prints the findings as JSON. Read-only: it never installs or runs anything.
+// package, checks the Node.js versions the project runs on, and prints the findings as JSON.
+// Read-only: it never installs or runs anything.
 //
 // Usage: node scan.mjs [project-folder | path/to/package.json]
-// Exit code: 0 = no finding, 1 = at least one finding, 2 = the scan could not be completed.
+// Exit code: 0 = no finding, 1 = at least one finding (a package advisory, or a vulnerable or
+// end-of-life Node.js), 2 = the scan could not be completed.
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listPackages } from "./lockfile.mjs";
+import { checkNode, fetchNodeData, readNodeDeclarations } from "./node.mjs";
 import { fetchDetails, queryBatch } from "./osv.mjs";
 
 const HINTS = {
@@ -16,6 +19,7 @@ const HINTS = {
   UNSUPPORTED_LOCKFILE: "Regenerate the lockfile with npm 7 or later: npm install --package-lock-only --ignore-scripts",
   INVALID_JSON: "Fix or regenerate the file named in the message.",
   OSV_UNAVAILABLE: "Try again later. Behind a proxy, set NODE_USE_ENV_PROXY=1 so that Node uses it.",
+  NODE_DATA_UNAVAILABLE: "Try again later. Behind a proxy, set NODE_USE_ENV_PROXY=1 so that Node uses it.",
   INTERNAL_ERROR: "This is a bug in dep-triage. Please report it at https://github.com/Nohan75/dep-triage/issues.",
 };
 
@@ -206,10 +210,11 @@ function readJson(folder, file, missingCode) {
  * Scans one project. Never throws: a failure becomes exit code 2 with an `error` object,
  * so that a crash can never be mistaken for "no finding".
  * @param {string} [projectPath] the project folder or its package.json; defaults to the current folder
- * @param {{ fetchFn?: typeof fetch, retryDelayMs?: number, now?: () => Date }} [options]
+ * @param {{ fetchFn?: typeof fetch, retryDelayMs?: number, now?: () => Date, nodeVersion?: string | null }} [options]
+ *   `nodeVersion` is the Node.js running the scan, reported as the source `runtime`; null leaves it out.
  * @returns {Promise<{ exitCode: 0 | 1 | 2, output: object }>}
  */
-export async function scan(projectPath = process.cwd(), { fetchFn, retryDelayMs, now = () => new Date() } = {}) {
+export async function scan(projectPath = process.cwd(), { fetchFn, retryDelayMs, now = () => new Date(), nodeVersion = process.version } = {}) {
   try {
     const folder = projectFolder(projectPath);
     const packageJson = readJson(folder, "package.json", "NO_PACKAGE_JSON");
@@ -226,20 +231,31 @@ export async function scan(projectPath = process.cwd(), { fetchFn, retryDelayMs,
     const findings = buildFindings(checked, idsByPackage, details);
     const malware = findings.filter((finding) => finding.type === "malware").length;
 
+    const declarations = readNodeDeclarations(folder, packageJson);
+    if (nodeVersion !== null) declarations.push({ source: "runtime", value: nodeVersion });
+    const scannedAt = now();
+    const node = checkNode(declarations, await fetchNodeData({ fetchFn, retryDelayMs }), scannedAt);
+    const nodeVulnerabilities = node.versions.reduce((sum, version) => sum + version.vulnerabilities.length, 0);
+    const nodeEndOfLife = node.versions.filter((version) => version.endOfLife === true).length;
+
     const output = {
       schemaVersion: 1,
       project: folder,
-      scannedAt: now().toISOString(),
+      scannedAt: scannedAt.toISOString(),
       summary: {
         packagesChecked: checked.length,
         packagesSkipped: skipped.length,
         malware,
         vulnerabilities: findings.length - malware,
+        nodeVulnerabilities,
+        nodeEndOfLife,
       },
       findings,
+      node,
       skipped,
     };
-    return { exitCode: findings.length > 0 ? 1 : 0, output };
+    const hasFinding = findings.length > 0 || nodeVulnerabilities > 0 || nodeEndOfLife > 0;
+    return { exitCode: hasFinding ? 1 : 0, output };
   } catch (error) {
     const known = typeof error?.code === "string" && Object.hasOwn(HINTS, error.code);
     const code = known ? error.code : "INTERNAL_ERROR";

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { queryBatch, fetchDetails } from "../skills/dep-triage/scripts/osv.mjs";
-import { json, recordingFetch, osvFixtureFetch } from "./helpers.mjs";
+import { json, recordingFetch, fixtureFetch } from "./helpers.mjs";
 
 const fast = (fetchFn) => ({ fetchFn, retryDelayMs: 0 });
 const pkgs = (n) => Array.from({ length: n }, (_, i) => ({ name: `p${i}`, version: "1.0.0" }));
@@ -10,7 +10,7 @@ const empty = (init) => json({ results: JSON.parse(init.body).queries.map(() => 
 const failing = { code: "OSV_UNAVAILABLE" };
 
 test("queryBatch posts name, ecosystem and version, and returns ids per package", async () => {
-  const f = osvFixtureFetch();
+  const f = fixtureFetch();
   const ids = await queryBatch([{ name: "chalk", version: "5.6.1" }, { name: "ora", version: "8.2.0" }], fast(f));
   assert.deepEqual(ids, [["MAL-2025-46969"], []]);
   assert.equal(f.calls[0].url, "https://api.osv.dev/v1/querybatch");
@@ -75,7 +75,7 @@ test("queryBatch rejects an unreadable or mismatched body", async () => {
 });
 
 test("fetchDetails returns one record per distinct id", async () => {
-  const f = osvFixtureFetch();
+  const f = fixtureFetch();
   const map = await fetchDetails(["MAL-2025-46969", "MAL-2025-46969", "GHSA-xvch-5gv4-984h"], fast(f));
   assert.equal(map.size, 2);
   assert.equal(map.get("GHSA-xvch-5gv4-984h").id, "GHSA-xvch-5gv4-984h");

@@ -1,7 +1,7 @@
 {
   "name": "dep-triage",
-  "version": "0.1.0",
-  "description": "Scan npm dependencies for known vulnerabilities and malicious packages, then triage each alert by its real impact on your code.",
+  "version": "0.2.0",
+  "description": "Scan npm dependencies for known vulnerabilities and malicious packages, check the Node.js version the project runs on, then triage each alert by its real impact on your code.",
   "author": {
     "name": "Nohan75",
     "url": "https://github.com/Nohan75"

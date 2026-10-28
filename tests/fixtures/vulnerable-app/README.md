@@ -2,6 +2,7 @@
 
 This folder is test data for dep-triage, not a real application.
 Its lockfile deliberately names vulnerable versions and one known malicious version (`chalk 5.6.1`).
+Its `.nvmrc` names a Node.js release with known vulnerabilities (`24.18.0`).
 Never run `npm install` here.
 
 ## Rule for malicious versions

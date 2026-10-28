@@ -1,6 +1,6 @@
 ---
 name: dep-triage
-description: Triage npm dependency security alerts by scanning the lockfile for known vulnerabilities and malicious packages, then checking the code to tell which ones actually matter. Use when the user wants dependencies audited, asks whether a package is safe or compromised, or wants to know if a CVE or npm audit warning affects them.
+description: Triage npm dependency security alerts by scanning the lockfile for known vulnerabilities and malicious packages, and the project's Node.js versions for known vulnerabilities, then checking the code to tell which ones actually matter. Use when the user wants dependencies audited, asks whether a package is safe or compromised, or wants to know if a CVE, an npm audit warning or a Node.js security release affects them.
 ---
 
 # dep-triage
@@ -14,8 +14,8 @@ NODE_USE_ENV_PROXY=1 node <skill-dir>/scripts/scan.mjs <project> > <report-file>
 ```
 
 - `<skill-dir>` is the folder that contains this file. `<project>` is the folder holding `package.json` and `package-lock.json`; it defaults to the current folder.
-- `<report-file>` is a file in a temporary folder, outside the project. The report is one JSON document, and on a large project it runs to thousands of lines: read it from the file, in parts. `summary` comes first, then `findings` from the most to the least severe, then `skipped`.
-- The command is read-only. It needs network access to `api.osv.dev`, and sends only the name and version of packages that come from the public npm registry.
+- `<report-file>` is a file in a temporary folder, outside the project. The report is one JSON document, and on a large project it runs to thousands of lines: read it from the file, in parts. `summary` comes first, then `findings` from the most to the least severe, then `node`, then `skipped`.
+- The command is read-only. It needs network access to `api.osv.dev`, and sends only the name and version of packages that come from the public npm registry. It also downloads the Node.js advisories and release calendar from `raw.githubusercontent.com`, which sends nothing about the project.
 - Exit code 0 means no finding, 1 means findings, 2 means the scan did not complete.
 
 Done when you have read `summary` and know the exit code.
@@ -34,7 +34,18 @@ For each one:
 2. Tell the user to move off the flagged version, by updating the parent `introducedBy[0]` or adding an `overrides` entry when the package is indirect, then to delete `node_modules` and reinstall.
 3. If the version was on disk, tell them to treat every secret on that machine and in CI as leaked, and to rotate them: npm tokens, cloud keys, `.env` values, SSH keys.
 
-## 4. Impact analysis
+## 4. Node.js versions
+
+`node.versions` lists the Node.js versions the project runs on, read from `.nvmrc`, `.node-version`, `.tool-versions`, `volta` in `package.json`, and the `FROM node:` lines of the Dockerfiles at the project root. The source `runtime` is the Node.js that ran the scan, on this machine. `engines` is not read: it is the range a package accepts, not the version that runs.
+
+These alerts skip the impact analysis: one upgrade of Node.js fixes them all, whatever the code calls. Their severity stands as published.
+
+- `endOfLife: true`: the line gets no security fix since `endOfLifeDate`, and advisories published after that date no longer list it, so `vulnerabilities` is incomplete. Advise moving to one of `node.supportedLines`.
+- `vulnerabilities` not empty: advise upgrading to `fixedIn` in every place listed in `sources`. `fixedIn: null` on a supported line means no fixed release is published.
+- `pinned: false`: the source names a release line, such as `24` or `node:24-alpine`, and each install takes its latest release. Only the end-of-life check applies.
+- `node.notChecked`: values that name no version, such as `lts/*` or `latest`.
+
+## 5. Impact analysis
 
 For every finding with `type: "vulnerability"`:
 
@@ -57,7 +68,7 @@ With more than 20 vulnerabilities, analyse the `critical` and `high` ones, mark 
 
 Done when every finding has a level, and every EXPOSED or NOT REACHED has its evidence.
 
-## 5. Report
+## 6. Report
 
 Write in the user's language, in this shape. Order the vulnerabilities EXPOSED, then UNDETERMINED, then NOT REACHED, and by severity inside each level.
 
@@ -68,6 +79,10 @@ MALICIOUS PACKAGES
   <package> <version> (<id>), brought in by <introducedBy[0]>
   → <what to do>
 
+NODE.JS
+  <version> (<sources>) · <N> vulnerabilities, the most severe <severity> | end of life since <endOfLifeDate> | no known vulnerability
+  → upgrade to <fixedIn> | move to a supported line: <supportedLines>
+
 VULNERABILITIES
   1. <package> <version> · <severity> · EXPOSED | NOT REACHED | UNDETERMINED
      <file:line that calls the vulnerable part, or the reason>
@@ -75,15 +90,17 @@ VULNERABILITIES
 
 NOT CHECKED
   <package> <version>: <reason>
+  Node.js in <source>: <value>
 ```
 
-`NOT CHECKED` lists the `skipped` array: private, git and local packages that were never sent to OSV. End with one line saying that exposure levels are a judgement from reading the code, not a proof.
+`NODE.JS` lists every entry of `node.versions`; with vulnerabilities, name the `critical` and `high` ones. `NOT CHECKED` lists the `skipped` array, the private, git and local packages that were never sent to OSV, then `node.notChecked`. End with one line saying that exposure levels are a judgement from reading the code, not a proof.
 
-## 6. Fixes are proposals
+## 7. Fixes are proposals
 
 - Direct dependency (`direct: true`): `npm install <package>@<fixedIn>`.
 - Indirect dependency: update the parent `introducedBy[0]`; when no release of the parent brings in the fix, an `overrides` entry in `package.json`.
 - `fixedIn: null`: say that no fixed version is published.
+- Node.js: the new version goes in each file of `sources`. `runtime` is the user's own Node.js, which they upgrade themselves.
 
 Edit files and run installs once the user asks for it.
 

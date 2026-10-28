@@ -9,7 +9,7 @@
     {
       "name": "dep-triage",
       "source": "./",
-      "description": "Scan npm dependencies for known vulnerabilities and malicious packages, then triage each alert by its real impact on your code.",
+      "description": "Scan npm dependencies for known vulnerabilities and malicious packages, check the Node.js version the project runs on, then triage each alert by its real impact on your code.",
       "category": "security"
     }
   ]
